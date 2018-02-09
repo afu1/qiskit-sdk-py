@@ -112,6 +112,7 @@ class MapperTest(QiskitTestCase):
         # for this particular test.
         if version_info.minor == 5:  # Python 3.5
 <<<<<<< HEAD
+<<<<<<< HEAD
             self.assertEqual(res, {'00101': 3, '00011': 22, '11100': 27,
                                    '01100': 1, '10011': 15, '00111': 53,
                                    '01000': 110, '11111': 19, '00100': 54,
@@ -145,6 +146,8 @@ class MapperTest(QiskitTestCase):
 #                                     '11001': 13, '11010': 14, '11011': 9,
 #                                     '11100': 28, '11111': 14}
 =======
+=======
+>>>>>>> QISKit/master
             import networkx
             if networkx.__version__ == '1.11':
                 expected_result = {'01001': 41, '10010': 25, '00111': 53,
@@ -170,6 +173,9 @@ class MapperTest(QiskitTestCase):
                                    '00010': 110, '00101': 2, '10011': 14}
 
         self.assertEqual(res, expected_result)
+<<<<<<< HEAD
+>>>>>>> QISKit/master
+=======
 >>>>>>> QISKit/master
 
     def test_symbolic_unary(self):

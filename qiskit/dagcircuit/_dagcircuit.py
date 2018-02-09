@@ -640,7 +640,11 @@ class DAGCircuit:
         self.basis = union_basis
         self.gates = union_gates
 <<<<<<< HEAD
+<<<<<<< HEAD
         for n in nx.topological_sort(input_circuit.multi_graph, reverse=True):
+=======
+        for n in reversed(list(nx.topological_sort(input_circuit.multi_graph))):
+>>>>>>> QISKit/master
 =======
         for n in reversed(list(nx.topological_sort(input_circuit.multi_graph))):
 >>>>>>> QISKit/master
