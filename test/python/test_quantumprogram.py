@@ -20,6 +20,7 @@
 
 import os
 import unittest
+from threading import Lock
 
 import numpy as np
 
@@ -399,9 +400,9 @@ class TestQuantumProgram(QiskitTestCase):
         qrn = q_program.get_quantum_register_names()
         crn = q_program.get_classical_register_names()
         qcn = q_program.get_circuit_names()
-        self.assertEqual(qrn, {'qr1', 'qr2'})
-        self.assertEqual(crn, {'cr1', 'cr2'})
-        self.assertEqual(qcn, {'qc1', 'qc2'})
+        self.assertCountEqual(qrn, ['qr1', 'qr2'])
+        self.assertCountEqual(crn, ['cr1', 'cr2'])
+        self.assertCountEqual(qcn, ['qc1', 'qc2'])
 
     def test_get_qasm(self):
         """Test the get_qasm.
@@ -852,6 +853,50 @@ class TestQuantumProgram(QiskitTestCase):
         self.assertTrue(qobj2['circuits'][1]['config']['xvals'] == [
             'only for qobj2', 2, 3, 4])
 
+    @requires_qe_access
+    def test_gate_after_measure(self, QE_TOKEN, QE_URL):
+        """Test that no gate is inserted after measure when compiling
+        for real backends. NEED internet connection for this.
+
+        See: https://github.com/QISKit/qiskit-sdk-py/issues/342
+        """
+        q_program = QuantumProgram()
+        qr = q_program.create_quantum_register('qr', 16)
+        cr = q_program.create_classical_register('cr', 16)
+        qc = q_program.create_circuit('emoticon', [qr], [cr])
+        qc.x(qr[0])
+        qc.x(qr[3])
+        qc.x(qr[5])
+        qc.h(qr[9])
+        qc.cx(qr[9], qr[8])
+        qc.x(qr[11])
+        qc.x(qr[12])
+        qc.x(qr[13])
+        for j in range(16):
+            qc.measure(qr[j], cr[j])
+        q_program.set_api(QE_TOKEN, QE_URL)
+        backend = 'ibmqx5'
+        cmap = {1: [0, 2], 2: [3], 3: [4, 14], 5: [4], 6: [5, 7, 11], 7: [10], 8: [7],
+                9: [8, 10], 11: [10], 12: [5, 11, 13], 13: [4, 14], 15: [0, 2, 14]}
+        initial_layout = {('qr', 0): ('q', 1), ('qr', 1): ('q', 0),
+                          ('qr', 2): ('q', 2), ('qr', 3): ('q', 3),
+                          ('qr', 4): ('q', 4), ('qr', 5): ('q', 14),
+                          ('qr', 6): ('q', 5), ('qr', 7): ('q', 6),
+                          ('qr', 8): ('q', 7), ('qr', 9): ('q', 11),
+                          ('qr', 10): ('q', 10), ('qr', 11): ('q', 8),
+                          ('qr', 12): ('q', 9), ('qr', 13): ('q', 12),
+                          ('qr', 14): ('q', 13), ('qr', 15): ('q', 15)}
+        qobj = q_program.compile(["emoticon"], backend=backend,
+                                 initial_layout=initial_layout, coupling_map=cmap)
+        measured_qubits = set()
+        has_gate_after_measure = False
+        for x in qobj["circuits"][0]["compiled_circuit"]["operations"]:
+            if x["name"] == "measure":
+                measured_qubits.add(x["qubits"][0])
+            elif set(x["qubits"]) & measured_qubits:
+                has_gate_after_measure = True
+        self.assertFalse(has_gate_after_measure)
+
     ###############################################################
     # Test for running programs
     ###############################################################
@@ -881,9 +926,9 @@ class TestQuantumProgram(QiskitTestCase):
         results2 = out.get_counts('qc2')
         results3 = out.get_counts('qc3')
         self.assertEqual(results2, {'000': 518, '111': 506})
-        self.assertEqual(results3, {'001': 119, '111': 129, '110': 134,
-                                    '100': 117, '000': 129, '101': 126,
-                                    '010': 145, '011': 125})
+        self.assertEqual(results3, {'001': 117, '111': 129, '110': 125,
+                                    '100': 119, '000': 129, '101': 126,
+                                    '010': 145, '011': 134})
 
     def test_run_async_program(self):
         """Test run_async.
@@ -895,9 +940,9 @@ class TestQuantumProgram(QiskitTestCase):
                 results2 = result.get_counts('qc2')
                 results3 = result.get_counts('qc3')
                 self.assertEqual(results2, {'000': 518, '111': 506})
-                self.assertEqual(results3, {'001': 119, '111': 129, '110': 134,
-                                            '100': 117, '000': 129, '101': 126,
-                                            '010': 145, '011': 125})
+                self.assertEqual(results3, {'001': 117, '111': 129, '110': 125,
+                                            '100': 119, '000': 129, '101': 126,
+                                            '010': 145, '011': 134})
             except Exception as e:
                 self.qp_program_exception = e
             finally:
@@ -922,7 +967,7 @@ class TestQuantumProgram(QiskitTestCase):
 
         self.qp_program_finished = False
         self.qp_program_exception = None
-        _ = q_program.run_async(qobj, callback=_job_done_callback)
+        q_program.run_async(qobj, callback=_job_done_callback)
 
         while not self.qp_program_finished:
             # Wait until the job_done_callback is invoked and completed.
@@ -931,9 +976,63 @@ class TestQuantumProgram(QiskitTestCase):
         if self.qp_program_exception:
             raise self.qp_program_exception
 
+    def test_run_async_stress(self):
+        """Test run_async.
+
+        If all correct should the data.
+        """
+        qp_programs_finished = 0
+        qp_programs_exception = []
+        lock = Lock()
+
+        def _job_done_callback(result):
+            nonlocal qp_programs_finished
+            nonlocal qp_programs_exception
+            try:
+                results2 = result.get_counts('qc2')
+                results3 = result.get_counts('qc3')
+                self.assertEqual(results2, {'000': 518, '111': 506})
+                self.assertEqual(results3, {'001': 117, '111': 129, '110': 125,
+                                            '100': 119, '000': 129, '101': 126,
+                                            '010': 145, '011': 134})
+            except Exception as e:
+                with lock:
+                    qp_programs_exception.append(e)
+            finally:
+                with lock:
+                    qp_programs_finished += 1
+
+        q_program = QuantumProgram(specs=self.QPS_SPECS)
+        qr = q_program.get_quantum_register("qname")
+        cr = q_program.get_classical_register("cname")
+        qc2 = q_program.create_circuit("qc2", [qr], [cr])
+        qc3 = q_program.create_circuit("qc3", [qr], [cr])
+        qc2.h(qr[0])
+        qc2.cx(qr[0], qr[1])
+        qc2.cx(qr[0], qr[2])
+        qc3.h(qr)
+        qc2.measure(qr, cr)
+        qc3.measure(qr, cr)
+        circuits = ['qc2', 'qc3']
+        shots = 1024  # the number of shots in the experiment.
+        backend = 'local_qasm_simulator'
+        qobj = q_program.compile(circuits, backend=backend, shots=shots,
+                                 seed=88)
+
+        q_program.run_async(qobj, callback=_job_done_callback)
+        q_program.run_async(qobj, callback=_job_done_callback)
+        q_program.run_async(qobj, callback=_job_done_callback)
+        q_program.run_async(qobj, callback=_job_done_callback)
+
+        while qp_programs_finished < 4:
+            # Wait until the job_done_callback is invoked and completed.
+            pass
+
+        if qp_programs_exception:
+            raise qp_programs_exception[0]
+
     def test_run_batch(self):
         """Test run_batch
-
         If all correct should the data.
         """
         q_program = QuantumProgram(specs=self.QPS_SPECS)
@@ -962,9 +1061,9 @@ class TestQuantumProgram(QiskitTestCase):
             counts2 = result.get_counts('qc2')
             counts3 = result.get_counts('qc3')
             self.assertEqual(counts2, {'000': 518, '111': 506})
-            self.assertEqual(counts3, {'001': 119, '111': 129, '110': 134,
-                                       '100': 117, '000': 129, '101': 126,
-                                       '010': 145, '011': 125})
+            self.assertEqual(counts3, {'001': 117, '111': 129, '110': 125,
+                                       '100': 119, '000': 129, '101': 126,
+                                       '010': 145, '011': 134})
 
     def test_run_batch_async(self):
         """Test run_batch_async
@@ -977,10 +1076,9 @@ class TestQuantumProgram(QiskitTestCase):
                     counts2 = result.get_counts('qc2')
                     counts3 = result.get_counts('qc3')
                     self.assertEqual(counts2, {'000': 518, '111': 506})
-                    self.assertEqual(counts3, {'001': 119, '111': 129,
-                                               '110': 134, '100': 117,
-                                               '000': 129, '101': 126,
-                                               '010': 145, '011': 125})
+                    self.assertEqual(counts3, {'001': 117, '111': 129, '110': 125,
+                                               '100': 119, '000': 129, '101': 126,
+                                               '010': 145, '011': 134})
             except Exception as e:
                 self.qp_program_exception = e
             finally:
@@ -1069,9 +1167,9 @@ class TestQuantumProgram(QiskitTestCase):
         results3 = out.get_counts('qc3')
         self.log.info(results3)
         self.assertEqual(results2, {'000': 518, '111': 506})
-        self.assertEqual(results3, {'001': 119, '111': 129, '110': 134,
-                                    '100': 117, '000': 129, '101': 126,
-                                    '010': 145, '011': 125})
+        self.assertEqual(results3, {'001': 117, '111': 129, '110': 125,
+                                    '100': 119, '000': 129, '101': 126,
+                                    '010': 145, '011': 134})
 
     def test_local_qasm_simulator_one_shot(self):
         """Test sinlge shot of local simulator .
@@ -1274,7 +1372,7 @@ class TestQuantumProgram(QiskitTestCase):
                                    max_credits=3, seed=1287126141)
         counts1 = result.get_counts('qc1')
         counts2 = result.get_counts('qc2')
-        self.assertEqual(counts1, {'10': 277, '11': 238, '01': 258,
+        self.assertEqual(counts1, {'10': 258, '11': 238, '01': 277,
                                    '00': 251})
         self.assertEqual(counts2, {'11': 515, '00': 509})
 
@@ -1396,7 +1494,7 @@ class TestQuantumProgram(QiskitTestCase):
                                    seed=78)
         # print(q_program.get_qasm('new_circuit'))
         self.assertEqual(result.get_counts('new_circuit'),
-                         {'00': 505, '01': 519})
+                         {'00': 480, '01': 544})
 
     def test_add_circuit_fail(self):
         """Test add two circuits fail.
@@ -1708,6 +1806,15 @@ class TestQuantumProgram(QiskitTestCase):
 
         If all correct should the data.
         """
+        # TODO: instead of skipping, the test should be fixed in Windows
+        # platforms. It currently fails during registering DummySimulator.
+        if os.name == 'nt':
+            raise unittest.SkipTest('Test not supported in Windows')
+
+        from ._dummybackend import DummySimulator
+        from qiskit.backends import register_backend
+        register_backend(DummySimulator)
+
         q_program = QuantumProgram(specs=self.QPS_SPECS)
         qr = q_program.get_quantum_register("qname")
         cr = q_program.get_classical_register("cname")
@@ -1718,15 +1825,17 @@ class TestQuantumProgram(QiskitTestCase):
         qc2.measure(qr, cr)
         circuits = ['qc2']
         shots = 1024  # the number of shots in the experiment.
-        backend = 'local_qasm_simulator'
+        backend = 'local_dummy_simulator'
         qobj = q_program.compile(circuits, backend=backend, shots=shots,
                                  seed=88)
+        out = q_program.run(qobj, wait=0.1, timeout=0.01)
+        has_timeout = False
         try:
-            _ = q_program.run(qobj, timeout=0.01)
-            raise Exception("Should timeout! but it didn't!")
+            out.get_counts("qc2")
         except QISKitError as ex:
-            self.assertEqual(
-                ex.message, 'Error waiting for Job results: Timeout after 0.01 seconds.')
+            has_timeout = True if ex.message == 'Dummy backend has timed out!' else False
+
+        self.assertTrue(has_timeout, "The simulator didn't time out!!, but it should have to")
 
     @requires_qe_access
     def test_hpc_parameter_is_correct(self, QE_TOKEN, QE_URL):
